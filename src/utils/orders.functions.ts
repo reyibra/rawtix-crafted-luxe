@@ -41,7 +41,6 @@ export const createOrder = createServerFn({ method: "POST" })
     const shippingCost = 0;
     const total = subtotal + shippingCost;
 
-    // Insert order
     const { data: order, error: orderError } = await supabaseAdmin
       .from("orders")
       .insert({
@@ -67,7 +66,6 @@ export const createOrder = createServerFn({ method: "POST" })
       throw new Error("Gagal membuat pesanan. Silakan coba lagi.");
     }
 
-    // Insert order items
     const orderItems = data.items.map((item) => ({
       order_id: order.id,
       product_id: item.productId,
@@ -84,7 +82,6 @@ export const createOrder = createServerFn({ method: "POST" })
 
     if (itemsError) {
       console.error("Order items insert error:", itemsError);
-      // Cleanup the order
       await supabaseAdmin.from("orders").delete().eq("id", order.id);
       throw new Error("Gagal menyimpan item pesanan. Silakan coba lagi.");
     }
@@ -94,4 +91,59 @@ export const createOrder = createServerFn({ method: "POST" })
       orderId: order.id,
       total,
     };
+  });
+
+const paymentProofSchema = z.object({
+  orderNumber: z.string().min(1).max(50),
+  proofUrl: z.string().url().max(2000),
+});
+
+export const submitPaymentProof = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => paymentProofSchema.parse(input))
+  .handler(async ({ data }) => {
+    const { data: order, error: findError } = await supabaseAdmin
+      .from("orders")
+      .select("id, status, payment_proof_url")
+      .eq("order_number", data.orderNumber)
+      .single();
+
+    if (findError || !order) {
+      throw new Error("Pesanan tidak ditemukan.");
+    }
+
+    const { error: updateError } = await supabaseAdmin
+      .from("orders")
+      .update({
+        payment_proof_url: data.proofUrl,
+        payment_proof_submitted_at: new Date().toISOString(),
+        payment_method: "transfer_bca",
+      })
+      .eq("id", order.id);
+
+    if (updateError) {
+      console.error("Payment proof update error:", updateError);
+      throw new Error("Gagal menyimpan bukti pembayaran. Silakan coba lagi.");
+    }
+
+    return { success: true };
+  });
+
+const orderNumberSchema = z.object({
+  orderNumber: z.string().min(1).max(50),
+});
+
+export const getOrderByNumber = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => orderNumberSchema.parse(input))
+  .handler(async ({ data }) => {
+    const { data: order, error } = await supabaseAdmin
+      .from("orders")
+      .select("order_number, total, status, payment_proof_url, payment_proof_submitted_at")
+      .eq("order_number", data.orderNumber)
+      .single();
+
+    if (error || !order) {
+      return null;
+    }
+
+    return order;
   });

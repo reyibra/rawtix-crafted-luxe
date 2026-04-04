@@ -74,7 +74,7 @@ function HomePage() {
               <ProductCard
                 key={product.id}
                 product={product}
-                onClick={() => setSelectedProduct(product)}
+                onQuickView={() => setSelectedProduct(product)}
               />
             ))}
           </div>
