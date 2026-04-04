@@ -1,101 +1,105 @@
 
 
-# RAWTIX.ID — Tahap 2: Checkout + Legal + Contact
+# Tahap 3: Manual Payment Flow + Quick Action + Footer Refinement
 
 ## 3 Aturan Terpenting
-
-1. **Checkout harus end-to-end functional** — form bound to state, server-side order creation with stock validation, cart cleared on success, clear feedback.
-2. **Jangan sentuh UI yang sudah bagus** — semua perubahan harus menyatu dengan visual existing (dark, minimal, editorial).
-3. **Gunakan arsitektur yang sudah ada** — localStorage cart, Supabase backend, TanStack Start server functions.
+1. **Card click dan quick action harus benar-benar terpisah** — card navigates, button opens modal. Event propagation harus di-handle dengan benar.
+2. **Payment proof flow harus end-to-end** — dari instruksi transfer sampai upload bukti, tersimpan di storage, terhubung ke order yang benar.
+3. **Jangan sentuh checkout flow yang sudah hidup** — semua perubahan adalah ekstensi, bukan penggantian.
 
 ## Temuan Arsitektur
 
-- **Cart**: sudah persisten via localStorage — sudah solid, tidak perlu diubah.
-- **Orders table**: sudah ada di DB lengkap dengan `order_items`, tapi **tidak ada RLS INSERT policy** — client tidak bisa insert langsung. Solusi: **server function** dengan `supabaseAdmin` untuk bypass RLS + validasi stock.
-- **Checkout**: form ada tapi semua input uncontrolled, tidak ada handler, tombol mati.
-- **Policy pages**: tidak ada route sama sekali — footer pakai `<span>` bukan `<Link>`.
-- **Contact page**: tidak ada.
+| Area | Status |
+|------|--------|
+| ProductCard `onClick` | Seluruh card = buka QuickViewModal. Belum ada navigasi ke detail. |
+| QuickViewModal | Sudah ada lengkap: size, qty, add to cart, view full details. |
+| Order status enum | `pending, paid, processing, shipped, delivered, cancelled` — tidak ada status khusus payment proof. |
+| Orders table | Punya `payment_method` dan `payment_reference` tapi belum ada `payment_proof_url`. |
+| Storage | Bucket `product-images` ada. Belum ada bucket untuk payment proofs. |
+| Footer contact | Label nomor masih `+62 857-1963-6329` (bukan "WhatsApp"). |
+| Order success page | Hanya menampilkan konfirmasi + nomor order. Belum ada instruksi transfer atau upload. |
 
 ## Rencana Implementasi
 
-### 1. Server Function: `createOrder` (baru)
-File: `src/utils/orders.functions.ts`
-- Menerima: cart items + customer data (email, phone, name, address, city, province, postal_code, notes)
-- Generate order_number (format: `RX-{timestamp}{random}`)
-- Validate input dengan Zod
-- Insert ke `orders` + `order_items` via `supabaseAdmin`
-- Return order_number + order id
+### 1. Database: Tambah kolom payment proof di orders
+**Migration:** Tambah 2 kolom ke `orders`:
+- `payment_proof_url` (text, nullable) — URL file bukti di storage
+- `payment_proof_submitted_at` (timestamptz, nullable)
 
-### 2. Checkout Page Rewrite
-File: `src/routes/checkout.tsx` (edit existing)
-- Bind semua input ke `useState` form state
-- Client-side validation (required fields, email format, phone format)
-- Inline error messages per field
-- Submit handler calls `createOrder` server function
-- Loading state on button (disabled + spinner text)
-- On success: `clearCart()`, navigate to order confirmation
-- On error: toast error message
+Tidak perlu ubah enum. Flow: order dibuat dengan status `pending` → user upload bukti → kolom proof terisi → admin nanti bisa verifikasi dan set `paid`.
 
-### 3. Order Confirmation Page (baru)
-File: `src/routes/order-success.tsx`
-- Route: `/order-success?order=RX-xxxxx`
-- Displays: order number, "Pesanan diterima", ringkasan singkat
-- CTA: "Kembali Belanja" → `/shop`
-- Jika tidak ada order number di URL, redirect ke `/shop`
-- Visual: consistent dark RAWTIX tone
+### 2. Storage: Buat bucket `payment-proofs`
+- Bucket public (agar gambar bisa ditampilkan)
+- Atau private + signed URL — pilih **public** untuk simplicity MVP
 
-### 4. Legal Pages (5 route baru)
-Files:
-- `src/routes/refund-policy.tsx`
-- `src/routes/privacy-policy.tsx`
-- `src/routes/terms.tsx`
-- `src/routes/shipping-policy.tsx`
-- `src/routes/contact.tsx`
+### 3. Server Function: `submitPaymentProof`
+File: `src/utils/orders.functions.ts` (extend existing)
+- Input: `orderNumber` + file (base64 atau URL setelah client-side upload)
+- Validate order exists dan masih `pending`
+- Upload file ke `payment-proofs` bucket
+- Update `orders.payment_proof_url` + `payment_proof_submitted_at`
+- Update `orders.payment_method` = `'transfer_bca'`
+- Return success
 
-Semua menggunakan layout component yang sama (`PolicyLayout`):
-- Header + Footer
-- Max-width container
-- Heading uppercase tracking wide
-- Body text `text-sm text-muted-foreground leading-relaxed`
-- Konten bahasa Indonesia, profesional, sesuai brand fashion
+### 4. Enhance Order Success → Payment Instruction + Upload
+File: `src/routes/order-success.tsx` (edit)
+- Setelah order berhasil, tampilkan:
+  - Nomor pesanan
+  - Total yang harus ditransfer
+  - **Instruksi transfer BCA (7105332998)**
+  - Upload bukti pembayaran (file input, accept image)
+  - Submit button
+  - Loading/success/error states
+- Setelah bukti terkirim: tampilkan konfirmasi "Bukti pembayaran diterima, menunggu verifikasi"
+- Perlu juga: route bisa diakses kembali via `/order-success?order=RX-xxx` untuk upload ulang jika belum upload
 
-Contact page: Instagram, TikTok, WhatsApp (+62 857-1963-6329), semua clickable.
+Server function tambahan: `getOrderByNumber` — fetch order detail (number, total, status, payment_proof_url) agar page bisa menampilkan info yang benar bahkan setelah reload.
 
-### 5. Footer Update
-File: `src/components/layout/Footer.tsx` (edit existing)
-- Ubah layout jadi 2 kolom (desktop): newsletter kiri, kontak kanan
-- Kontak kanan: Instagram, TikTok, WhatsApp — dengan icon + label, clickable
-- Ubah `<span>` policy links jadi `<Link>` ke route yang benar
-- Mobile: stack vertikal
+### 5. ProductCard: Pisahkan click card vs quick action
+File: `src/components/product/ProductCard.tsx` (edit)
+- **Card area (keseluruhan):** Navigasi ke `/product/$slug` — ubah dari `<button onClick>` menjadi wrapping dengan `<Link>`
+- **Quick action button:** Tombol terpisah di bawah nama/harga, label: **"Pilih Opsi"** — klik buka QuickViewModal via callback
+- Button harus `e.stopPropagation()` dan `e.preventDefault()` agar tidak trigger navigasi
+- Untuk produk sold out: tombol disabled atau hidden
 
-### 6. Shared Component (baru)
-File: `src/components/layout/PolicyLayout.tsx`
-- Reusable wrapper: Header, main content area, Footer
-- Dipakai oleh semua 5 legal pages
+### 6. Shop pages: Update interaction pattern
+Files: `src/routes/shop.tsx` + `src/routes/shop.$category.tsx` (edit)
+- ProductCard sekarang punya 2 props: `onQuickView` (buka modal) dan navigasi implicit via Link
+- QuickViewModal tetap sama, hanya trigger-nya berubah
 
-## Database Changes
-- **Migration**: Tambah RLS INSERT policy untuk `orders` dan `order_items` agar server function bisa insert. Sebenarnya server function pakai `supabaseAdmin` (bypass RLS), jadi **tidak perlu migration** — cukup server function saja.
+### 7. Footer: Label WhatsApp
+File: `src/components/layout/Footer.tsx` (edit line 123)
+- Ubah `<span>+62 857-1963-6329</span>` → `<span>WhatsApp</span>`
 
-## Yang Sengaja Tidak Dikerjakan
-- Auth / login
-- Admin panel
-- Payment gateway integration (Midtrans)
-- Shipping cost calculation
-- Stock decrement on order (Phase 3)
-- Order tracking
+### 8. Homepage index: Update ProductCard usage
+File: `src/routes/index.tsx` — jika homepage juga render ProductCard, sesuaikan props.
 
 ## File yang Diubah/Dibuat
 
 | File | Aksi |
 |------|------|
-| `src/utils/orders.functions.ts` | Baru — server function createOrder |
-| `src/routes/checkout.tsx` | Edit — bind form, validation, submit |
-| `src/routes/order-success.tsx` | Baru — konfirmasi order |
-| `src/routes/refund-policy.tsx` | Baru |
-| `src/routes/privacy-policy.tsx` | Baru |
-| `src/routes/terms.tsx` | Baru |
-| `src/routes/shipping-policy.tsx` | Baru |
-| `src/routes/contact.tsx` | Baru |
-| `src/components/layout/PolicyLayout.tsx` | Baru — reusable layout |
-| `src/components/layout/Footer.tsx` | Edit — 2-col layout, real links, kontak |
+| `src/components/product/ProductCard.tsx` | Edit — Link wrapper + quick action button |
+| `src/components/product/QuickViewModal.tsx` | Tidak berubah |
+| `src/routes/shop.tsx` | Edit — update ProductCard props |
+| `src/routes/shop.$category.tsx` | Edit — update ProductCard props |
+| `src/routes/index.tsx` | Edit — update ProductCard props jika dipakai |
+| `src/routes/order-success.tsx` | Edit — tambah instruksi transfer + upload bukti |
+| `src/utils/orders.functions.ts` | Edit — tambah `submitPaymentProof` + `getOrderByNumber` |
+| `src/components/layout/Footer.tsx` | Edit — label WhatsApp |
+| Migration SQL | Tambah `payment_proof_url`, `payment_proof_submitted_at` ke orders |
+| Storage bucket | Buat `payment-proofs` |
+
+## Yang Sengaja Tidak Dikerjakan
+- Auth / login
+- Admin panel (verifikasi bukti pembayaran)
+- Midtrans
+- Stock decrement
+- Shipping cost calculation
+- Multiple payment proofs per order
+
+## Keputusan Teknis Utama
+1. **Tidak ubah enum order_status** — `pending` cukup, proof upload dilacak via kolom terpisah
+2. **Upload via client-side ke Supabase Storage** lalu kirim URL ke server function — lebih simple daripada base64 via server function
+3. **Label quick action: "Pilih Opsi"** — natural dalam bahasa Indonesia, premium enough
+4. **Bucket payment-proofs: public** — simplicity MVP, admin bisa akses langsung
 
