@@ -1,6 +1,13 @@
 import { useState, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { Plus, Trash2, Upload } from "lucide-react";
+import { Plus, Trash2, Upload, Star, GripVertical } from "lucide-react";
+
+interface ImageData {
+  id?: string;
+  url: string;
+  isPrimary: boolean;
+  sortOrder: number;
+}
 
 export interface ProductFormData {
   name: string;
@@ -14,6 +21,7 @@ export interface ProductFormData {
   sortOrder: number;
   variants: { size: string; stock: number; sku?: string }[];
   imageUrl?: string;
+  imageUrls?: ImageData[];
 }
 
 interface Props {
@@ -42,6 +50,7 @@ export function ProductForm({ initialData, categories, onSubmit, isSubmitting, e
       sortOrder: 0,
       variants: [{ size: "M", stock: 0 }],
       imageUrl: "",
+      imageUrls: [],
     }
   );
   const [uploading, setUploading] = useState(false);
@@ -52,26 +61,59 @@ export function ProductForm({ initialData, categories, onSubmit, isSubmitting, e
     []
   );
 
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const images = form.imageUrls && form.imageUrls.length > 0
+    ? form.imageUrls
+    : form.imageUrl
+      ? [{ url: form.imageUrl, isPrimary: true, sortOrder: 0 }]
+      : [];
 
-    if (!file.type.startsWith("image/")) return;
-    if (file.size > 5 * 1024 * 1024) return;
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
 
     setUploading(true);
-    const ext = file.name.split(".").pop();
-    const path = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${ext}`;
+    const newImages = [...images];
 
-    const { error: uploadError } = await supabase.storage
-      .from("product-images")
-      .upload(path, file, { upsert: true });
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (!file.type.startsWith("image/")) continue;
+      if (file.size > 5 * 1024 * 1024) continue;
 
-    if (!uploadError) {
-      const { data: urlData } = supabase.storage.from("product-images").getPublicUrl(path);
-      update("imageUrl", urlData.publicUrl);
+      const ext = file.name.split(".").pop();
+      const path = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${ext}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("product-images")
+        .upload(path, file, { upsert: true });
+
+      if (!uploadError) {
+        const { data: urlData } = supabase.storage.from("product-images").getPublicUrl(path);
+        newImages.push({
+          url: urlData.publicUrl,
+          isPrimary: newImages.length === 0,
+          sortOrder: newImages.length,
+        });
+      }
     }
+
+    update("imageUrls", newImages);
+    update("imageUrl", "");
     setUploading(false);
+    e.target.value = "";
+  };
+
+  const removeImage = (idx: number) => {
+    const newImages = images.filter((_, i) => i !== idx);
+    if (newImages.length > 0 && !newImages.some((img) => img.isPrimary)) {
+      newImages[0].isPrimary = true;
+    }
+    update("imageUrls", newImages.map((img, i) => ({ ...img, sortOrder: i })));
+    if (newImages.length === 0) update("imageUrl", "");
+  };
+
+  const setPrimary = (idx: number) => {
+    const newImages = images.map((img, i) => ({ ...img, isPrimary: i === idx }));
+    update("imageUrls", newImages);
   };
 
   const addVariant = () => {
@@ -90,7 +132,12 @@ export function ProductForm({ initialData, categories, onSubmit, isSubmitting, e
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmit(form);
+    const submitData = { ...form };
+    if (images.length > 0) {
+      submitData.imageUrls = images;
+      submitData.imageUrl = "";
+    }
+    onSubmit(submitData);
   };
 
   return (
@@ -99,31 +146,49 @@ export function ProductForm({ initialData, categories, onSubmit, isSubmitting, e
         <div className="bg-destructive/10 border border-destructive/30 text-destructive text-xs p-3">{error}</div>
       )}
 
-      {/* Image */}
+      {/* Images */}
       <div className="border border-border p-4">
         <label className="block text-xs tracking-wider uppercase text-muted-foreground mb-2">Gambar Produk</label>
-        {form.imageUrl ? (
-          <div className="relative inline-block">
-            <img src={form.imageUrl} alt="Product" className="w-32 h-32 object-cover border border-border" />
-            <button
-              type="button"
-              onClick={() => update("imageUrl", "")}
-              className="absolute -top-2 -right-2 bg-destructive text-white rounded-full w-5 h-5 flex items-center justify-center text-xs"
-            >
-              ×
-            </button>
-          </div>
-        ) : (
-          <label className="flex flex-col items-center justify-center w-32 h-32 border border-dashed border-border cursor-pointer hover:border-foreground/30 transition-colors">
+        <div className="flex flex-wrap gap-3 mb-3">
+          {images.map((img, idx) => (
+            <div key={idx} className="relative group">
+              <img src={img.url} alt="Product" className={`w-24 h-24 sm:w-32 sm:h-32 object-cover border ${img.isPrimary ? "border-foreground" : "border-border"}`} />
+              <div className="absolute inset-0 bg-background/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setPrimary(idx)}
+                  className={`p-1 ${img.isPrimary ? "text-yellow-400" : "text-foreground hover:text-yellow-400"}`}
+                  title="Set as primary"
+                >
+                  <Star className="w-4 h-4" fill={img.isPrimary ? "currentColor" : "none"} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => removeImage(idx)}
+                  className="p-1 text-foreground hover:text-destructive"
+                  title="Remove"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+              {img.isPrimary && (
+                <span className="absolute top-1 left-1 text-[8px] bg-foreground text-background px-1 py-0.5 tracking-wider uppercase">
+                  Primary
+                </span>
+              )}
+            </div>
+          ))}
+          <label className="flex flex-col items-center justify-center w-24 h-24 sm:w-32 sm:h-32 border border-dashed border-border cursor-pointer hover:border-foreground/30 transition-colors">
             <Upload className="w-5 h-5 text-muted-foreground" />
             <span className="text-[10px] text-muted-foreground mt-1">{uploading ? "Uploading..." : "Upload"}</span>
-            <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" disabled={uploading} />
+            <input type="file" accept="image/*" multiple onChange={handleImageUpload} className="hidden" disabled={uploading} />
           </label>
-        )}
+        </div>
+        <p className="text-[10px] text-muted-foreground">Klik ★ untuk set gambar utama. Max 5MB per file.</p>
       </div>
 
       {/* Name + Slug */}
-      <div className="grid md:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label="Nama Produk">
           <input
             required
@@ -156,7 +221,7 @@ export function ProductForm({ initialData, categories, onSubmit, isSubmitting, e
       </Field>
 
       {/* Price + Category + Status */}
-      <div className="grid md:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <Field label="Harga (Rp)">
           <input
             type="number"
@@ -206,7 +271,7 @@ export function ProductForm({ initialData, categories, onSubmit, isSubmitting, e
       )}
 
       {/* Featured + Sort */}
-      <div className="grid md:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label="Featured">
           <label className="flex items-center gap-2 cursor-pointer">
             <input

@@ -1,6 +1,6 @@
-import { createFileRoute, Outlet, Link, useNavigate, redirect } from "@tanstack/react-router";
+import { createFileRoute, Outlet, Link, useNavigate } from "@tanstack/react-router";
 import { AdminAuthProvider, useAdminAuth } from "@/hooks/useAdminAuth";
-import { LayoutDashboard, ShoppingCart, Package, FolderOpen, LogOut, Menu, X } from "lucide-react";
+import { LayoutDashboard, ShoppingCart, Package, FolderOpen, LogOut, Menu, X, Truck } from "lucide-react";
 import { useState } from "react";
 
 export const Route = createFileRoute("/admin")({
@@ -20,6 +20,7 @@ const navItems = [
   { to: "/admin/orders" as const, label: "Pesanan", icon: ShoppingCart },
   { to: "/admin/products" as const, label: "Produk", icon: Package },
   { to: "/admin/categories" as const, label: "Kategori", icon: FolderOpen },
+  { to: "/admin/shipping" as const, label: "Pengiriman", icon: Truck },
 ];
 
 function AdminLayoutGuard() {
@@ -48,7 +49,7 @@ function AdminLayoutGuard() {
   return (
     <div className="flex min-h-screen bg-background">
       {/* Desktop sidebar */}
-      <aside className="hidden md:flex w-56 flex-col border-r border-border bg-card">
+      <aside className="hidden md:flex w-56 flex-col border-r border-border bg-card shrink-0">
         <div className="p-4 border-b border-border">
           <Link to="/admin" className="font-heading text-sm font-bold tracking-[0.2em] uppercase text-foreground">
             RAWTIX
@@ -84,7 +85,7 @@ function AdminLayoutGuard() {
       </aside>
 
       {/* Mobile header */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-w-0">
         <header className="md:hidden flex items-center justify-between p-3 border-b border-border bg-card">
           <span className="font-heading text-sm font-bold tracking-[0.2em] uppercase text-foreground">RAWTIX</span>
           <button onClick={() => setMobileOpen(!mobileOpen)} className="text-foreground">
@@ -117,7 +118,7 @@ function AdminLayoutGuard() {
           </div>
         )}
 
-        <main className="flex-1 p-4 md:p-6 overflow-auto">
+        <main className="flex-1 p-3 sm:p-4 md:p-6 overflow-auto">
           <Outlet />
         </main>
       </div>
