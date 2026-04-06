@@ -26,6 +26,7 @@ function ProductDetailPage() {
   const { slug } = Route.useParams();
   const [selectedSize, setSelectedSize] = useState("");
   const [quantity, setQuantity] = useState(1);
+  const [activeImageIndex, setActiveImageIndex] = useState(0);
   const { addItem } = useCart();
 
   const { data: product, isLoading } = useQuery({
@@ -45,8 +46,8 @@ function ProductDetailPage() {
     return (
       <div className="min-h-screen bg-background text-foreground">
         <Header />
-        <div className="pt-[72px] px-6 md:px-10 py-16">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+        <div className="pt-[72px] px-4 sm:px-6 md:px-10 py-16">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-5xl mx-auto">
             <div className="aspect-square bg-secondary animate-pulse" />
             <div className="space-y-4">
               <div className="h-4 bg-secondary animate-pulse w-1/2" />
@@ -77,9 +78,14 @@ function ProductDetailPage() {
     );
   }
 
-  const primaryImage =
-    product.product_images?.find((img) => img.is_primary) ??
-    product.product_images?.[0];
+  // Sort images: primary first, then by sort_order
+  const sortedImages = [...(product.product_images ?? [])].sort((a, b) => {
+    if (a.is_primary && !b.is_primary) return -1;
+    if (!a.is_primary && b.is_primary) return 1;
+    return a.sort_order - b.sort_order;
+  });
+
+  const activeImage = sortedImages[activeImageIndex] ?? sortedImages[0];
   const variants = product.product_variants ?? [];
   const selectedVariant = variants.find((v) => v.size === selectedSize);
   const isSoldOut = product.status === "sold_out";
@@ -97,7 +103,7 @@ function ProductDetailPage() {
       size: selectedSize,
       price: product.price,
       quantity,
-      image: primaryImage?.url ?? "",
+      image: activeImage?.url ?? "",
     });
     toast.success("Ditambahkan ke keranjang");
   };
@@ -106,19 +112,36 @@ function ProductDetailPage() {
     <div className="min-h-screen bg-background text-foreground">
       <Header />
 
-      <main className="pt-[72px] px-6 md:px-10 py-10">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-10 max-w-5xl mx-auto">
-          {/* Image */}
-          <div className="aspect-square bg-card overflow-hidden">
-            {primaryImage ? (
-              <img
-                src={primaryImage.url}
-                alt={primaryImage.alt_text ?? product.name}
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs uppercase tracking-widest">
-                No Image
+      <main className="pt-[72px] px-4 sm:px-6 md:px-10 py-10">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-10 max-w-5xl mx-auto">
+          {/* Image Gallery */}
+          <div className="space-y-3">
+            <div className="aspect-square bg-card overflow-hidden">
+              {activeImage ? (
+                <img
+                  src={activeImage.url}
+                  alt={activeImage.alt_text ?? product.name}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs uppercase tracking-widest">
+                  No Image
+                </div>
+              )}
+            </div>
+            {sortedImages.length > 1 && (
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                {sortedImages.map((img, idx) => (
+                  <button
+                    key={img.id}
+                    onClick={() => setActiveImageIndex(idx)}
+                    className={`w-16 h-16 sm:w-20 sm:h-20 shrink-0 border overflow-hidden transition-colors ${
+                      idx === activeImageIndex ? "border-foreground" : "border-border hover:border-foreground/40"
+                    }`}
+                  >
+                    <img src={img.url} alt="" className="w-full h-full object-cover" />
+                  </button>
+                ))}
               </div>
             )}
           </div>
@@ -128,7 +151,7 @@ function ProductDetailPage() {
             <p className="text-[10px] tracking-[0.3em] uppercase text-muted-foreground">
               rawtix.id
             </p>
-            <h1 className="font-heading text-xl tracking-[0.2em] uppercase mt-2">
+            <h1 className="font-heading text-lg sm:text-xl tracking-[0.2em] uppercase mt-2">
               {product.name}
             </h1>
             <p className="text-muted-foreground mt-2">
@@ -174,9 +197,7 @@ function ProductDetailPage() {
             {/* Quantity */}
             {!isSoldOut && (
               <div className="mt-6">
-                <p className="text-xs tracking-[0.2em] uppercase mb-3">
-                  Jumlah
-                </p>
+                <p className="text-xs tracking-[0.2em] uppercase mb-3">Jumlah</p>
                 <div className="flex items-center border border-border w-fit">
                   <button
                     onClick={() => setQuantity(Math.max(1, quantity - 1))}
@@ -184,9 +205,7 @@ function ProductDetailPage() {
                   >
                     <Minus className="w-3 h-3" />
                   </button>
-                  <span className="px-4 text-sm min-w-[40px] text-center">
-                    {quantity}
-                  </span>
+                  <span className="px-4 text-sm min-w-[40px] text-center">{quantity}</span>
                   <button
                     onClick={() => setQuantity(quantity + 1)}
                     className="p-2 hover:bg-secondary transition-colors"
@@ -219,9 +238,7 @@ function ProductDetailPage() {
             {/* Description */}
             {product.description && (
               <div className="mt-10 pt-8 border-t border-border">
-                <p className="text-xs tracking-[0.2em] uppercase mb-4">
-                  Deskripsi
-                </p>
+                <p className="text-xs tracking-[0.2em] uppercase mb-4">Deskripsi</p>
                 <div className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">
                   {product.description}
                 </div>
