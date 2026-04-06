@@ -1,199 +1,336 @@
-
-
-# Tahap 4: Admin System — Auth, Dashboard, Order & Product Management
+# Tahap 5: Public-Readiness Hardening
 
 ## 3 Aturan Terpenting
 
-1. **Admin auth harus server-validated** — gunakan Supabase Auth + `user_roles` table dengan `has_role()` security definer function. Semua server function admin harus memvalidasi role, bukan hanya client-side redirect.
-2. **Semua CRUD admin harus via server functions (`supabaseAdmin`)** — karena RLS existing memblokir INSERT/UPDATE/DELETE untuk semua table. Pattern yang sama seperti `createOrder` sudah ada dan proven.
-3. **Public storefront tidak boleh terpengaruh** — admin routes di `/admin/*`, admin server functions di file terpisah, tidak menyentuh komponen public existing.
+1. **### 1. Fix** `/admin/login` **Blank Screen (CRITICAL)**
+  **Root cause:** `admin.login.tsx` **terdaftar sebagai child route dari** `admin.tsx`**, sehingga** `AdminLayoutGuard` **tetap membungkus halaman login. Saat user belum terautentikasi, guard melakukan redirect ke** `/admin/login`**, tetapi karena login page sendiri berada di bawah guard yang sama, halaman login tidak pernah dirender dan hasil akhirnya blank screen.**
+  **Final decision: pisahkan login admin dari parent admin layout.**  
+  **Gunakan route file standalone:** `src/routes/admin_.login.tsx` **agar path tetap** `/admin/login` **tetapi tidak menjadi child dari** `admin.tsx`**.**  
+  **Hapus route lama** `src/routes/admin.login.tsx`**.**
+  **Wajib diverifikasi setelah implementasi:**
+  **1.** `/admin/login` **terbuka langsung tanpa blank screen**
+  **2. form login tampil normal**
+  **3. login sukses redirect ke** `/admin`
+  **4. salah credential menampilkan error yang jelas**
+  **5. route** `/admin/*` **tetap protected**
+  **6. logout mengembalikan user ke** `/admin/login`
+2. **Semua perubahan checkout/schema harus sinkron end-to-end** — form → Zod validator → DB insert → admin order detail. Satu field yang tidak sinkron = order gagal.
+3. **Theme toggle harus berbasis CSS variables yang sudah ada** — project sudah pakai CSS custom properties di `:root`. Tinggal tambah `.light` variant dan toggle class di `<html>`.
 
 ## Temuan Arsitektur
 
-| Area | Status |
-|------|--------|
-| Auth system | Tidak ada. Supabase Auth tersedia tapi belum dipakai. |
-| Route protection | Tidak ada pathless layout route. Semua routes flat di root. |
-| Admin routes | Tidak ada. |
-| Orders table | Lengkap, RLS SELECT = false (hanya admin via `supabaseAdmin` bisa baca). |
-| Products/categories/variants | Lengkap, RLS SELECT = public readable, no INSERT/UPDATE/DELETE. |
-| Storage buckets | `product-images` (public), `payment-proofs` (public). |
-| Server functions | `orders.functions.ts` — pattern `supabaseAdmin` sudah proven. |
-| Root route | `createRootRouteWithContext<{ queryClient }>` — perlu extend context untuk auth. |
+
+| Area                 | Status         | Root Cause / Note                                                                                                                                                                                                                     |
+| -------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/admin/login` blank | **BUG**        | `admin.login.tsx` = child of `admin.tsx`. AdminLayoutGuard checks auth, user not logged in → `navigate({ to: "/admin/login" })` → renders null → blank. Login page never gets a chance to render because the parent layout blocks it. |
+| `/login` 404         | **BUG**        | Route file doesn't exist. No `/login` route defined.                                                                                                                                                                                  |
+| Checkout form        | Basic          | Only has: email, phone, name, address (1 field), city, province, postalCode. Missing: kecamatan, street detail, additional detail.                                                                                                    |
+| Theme system         | Dark only      | `:root` has dark values only. No `.light` / `.dark` class system. `@custom-variant dark` exists but no light values defined.                                                                                                          |
+| Responsive           | Partial        | Most layouts use Tailwind responsive, but no systematic audit.                                                                                                                                                                        |
+| Stock decrement      | None           | No trigger or server logic for stock changes.                                                                                                                                                                                         |
+| Shipping             | None           | `shipping_cost` column exists (default 0), no calculation logic.                                                                                                                                                                      |
+| Multiple images      | Partial        | `product_images` table exists with `sort_order` and `is_primary`. Admin form only handles single image. Product detail shows single image.                                                                                            |
+| Notification         | None           | No email provider, no notification infrastructure.                                                                                                                                                                                    |
+| Orders schema        | Missing fields | No `district`/`kecamatan`, no `street_address`, no `address_detail`. Single `address` text field.                                                                                                                                     |
+
 
 ## Rencana Implementasi
 
-### 1. Database Migration: `user_roles` table + `has_role()` function
+### 1. Fix `/admin/login` Blank Screen (CRITICAL)
 
-```sql
-CREATE TYPE public.app_role AS ENUM ('admin');
+**Root cause:** `admin.login.tsx` uses `createFileRoute("/admin/login")` which makes it a child of the `/admin` layout. The layout's `AdminLayoutGuard` checks `isAuthenticated` and calls `navigate({ to: "/admin/login" })` when false — but since login IS inside the layout, the guard prevents rendering.
 
-CREATE TABLE public.user_roles (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
-  role app_role NOT NULL,
-  UNIQUE (user_id, role)
-);
+**Fix:** Move `admin.login.tsx` to be a **standalone route outside the admin layout**. Create `src/routes/admin_.login.tsx` (note the underscore: `admin_` breaks the parent-child relationship in TanStack Router file-based routing). Delete the old `admin.login.tsx`.
 
-ALTER TABLE public.user_roles ENABLE ROW LEVEL SECURITY;
+Alternative: Add an exception in `AdminLayoutGuard` to check if the current route is `/admin/login` and skip the guard. But the cleaner approach is `admin_.login.tsx`.
 
-CREATE OR REPLACE FUNCTION public.has_role(_user_id uuid, _role app_role)
-RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
-  SELECT EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = _user_id AND role = _role)
-$$;
+**Wait** — actually in TanStack Router flat routing, `admin.login.tsx` creates route `/admin/login` as a child of `/admin`. The underscore convention `admin_.login.tsx` would create `/admin/login` without being a child of the admin layout.
 
--- RLS: hanya admin bisa SELECT user_roles
-CREATE POLICY "Admins can read roles" ON public.user_roles
-  FOR SELECT TO authenticated
-  USING (public.has_role(auth.uid(), 'admin'));
-```
+Let me verify: TanStack Router file-based routing — `admin.login.tsx` = child of `admin.tsx` layout. To make it independent: use `admin_.login.tsx` which creates path `/admin/login` but NOT as a child of `admin` layout.
 
-Setelah migration, admin user dibuat manual via Supabase Auth (sign up), lalu INSERT role via insert tool.
+### 2. Handle `/login` → Redirect to `/admin/login`
 
-### 2. Auth Configuration: Enable email auth, auto-confirm for admin
+Create `src/routes/login.tsx` with a simple redirect to `/admin/login` in `beforeLoad`.
 
-Karena ini admin-only dan bukan customer auth, gunakan `cloud--configure_auth` untuk enable auto-confirm email agar admin tidak perlu verifikasi email (internal use).
+### 3. Upgrade Checkout Form + DB Schema
 
-### 3. Admin Auth Server Functions
+**Migration:** Add columns to `orders`:
 
-File: `src/utils/admin.functions.ts`
-- `verifyAdmin`: server function yang menerima auth token, validate via `supabaseAdmin` bahwa user punya role `admin`
-- Dipakai oleh semua admin server functions sebagai guard
+- `district` (text, nullable) — kecamatan
+- `street_address` (text, nullable) — nama jalan/gedung/nomor
+- `address_detail` (text, nullable) — blok/unit/patokan
 
-### 4. Admin Login Page
+Keep existing `address` field as legacy/concatenated fallback.
 
-File: `src/routes/admin.login.tsx`
-- Route: `/admin/login`
-- Email + password form
-- Calls `supabase.auth.signInWithEmailAndPassword()`
-- On success → redirect to `/admin`
-- Dark, minimal UI matching RAWTIX tone tapi terasa "panel internal"
+**Form update:** Add new fields to checkout form, update Zod schema in `orders.functions.ts`, update `createOrder` handler, update admin order detail display.
 
-### 5. Admin Layout Route (Protected)
+### 4. Theme Toggle (Black/White)
 
-File: `src/routes/admin.tsx`
-- Pathless-like layout route for `/admin/*`
-- `beforeLoad`: check auth state, redirect to `/admin/login` if not authenticated
-- Component: admin sidebar nav + `<Outlet />`
-- Navigation: Dashboard, Orders, Products, Categories, Settings
-- Logout button
+- Add `.light` CSS variable set in `styles.css` (inverted: white bg, dark text)
+- Create `ThemeProvider` context + `useTheme` hook, persist to `localStorage`
+- Add toggle class to `<html>` element
+- Add toggle button in Header (sun/moon icon, minimal)
+- Admin pages: keep dark always OR let theme follow — default: follow theme
 
-### 6. Admin Dashboard
+### 5. Responsive Hardening
 
-File: `src/routes/admin.index.tsx`
-- Route: `/admin`
-- Server function: `getAdminDashboardStats` — returns counts (total orders, pending, payment submitted, total products)
-- Simple metric cards
-- Recent orders list (5 terbaru)
+Systematic pass through key components:
 
-### 7. Admin Order Management
+- Header: already OK (simple flex)
+- Checkout: grid → single column on mobile
+- Admin layout: already has mobile nav
+- Quick view modal: ensure max-height/scroll on small screens
+- Product detail: grid → stack on mobile (already done)
+- Footer: check wrapping
+- Cart: verify mobile layout
 
-Files:
-- `src/routes/admin.orders.tsx` — order list with status filter tabs
-- `src/routes/admin.orders.$id.tsx` — order detail
+### 6. Stock Auto-Decrement
 
-Server functions in `src/utils/admin.functions.ts`:
-- `getAdminOrders`: list orders with optional status filter, pagination
-- `getAdminOrderDetail`: single order + order_items
-- `updateOrderStatus`: update status (pending → paid → processing → shipped → delivered / cancelled)
+**Decision: Decrement when admin sets status to `paid`.**
 
-Order detail page shows:
-- Customer info (name, email, phone, address)
-- Order items (product, size, qty, price)
-- Payment proof preview (clickable image from `payment_proof_url`)
-- Status change buttons: Verify Payment (→ paid), Process (→ processing), Ship (→ shipped), Deliver (→ delivered), Cancel
+Add logic in `updateOrderStatus` server function:
 
-### 8. Admin Product Management
+- When status changes to `paid`: decrement `product_variants.stock` for each order item
+- When status changes to `cancelled` (from `paid` or later): restore stock
+- Prevent double-decrement by checking previous status
+- Storefront: show "Sold Out" when all variant stocks = 0
 
-Files:
-- `src/routes/admin.products.tsx` — product list
-- `src/routes/admin.products.new.tsx` — create product form
-- `src/routes/admin.products.$id.tsx` — edit product
+### 7. Shipping Logic (Admin-Configured Flat Rate)
 
-Server functions:
-- `getAdminProducts`: all products including drafts
-- `createProduct`: insert product + variants + images
-- `updateProduct`: update product fields
-- `deleteProduct`: delete product (or set draft)
-- `uploadProductImage`: upload to `product-images` bucket
+**Simplest MVP approach:**
 
-Product form fields:
-- Name, slug (auto-generate from name), description, price
-- Category (dropdown from categories)
-- Status: active / sold_out / preorder / draft
-- `preorder_estimated_date` (shown if preorder)
-- Featured toggle
-- Image upload (primary image)
-- Variants section: add/remove size + stock rows
+- Create `shipping_rates` table: id, name, price, is_default, active
+- Admin can configure shipping options
+- Checkout shows shipping options, user selects one
+- Selected shipping cost added to total
 
-### 9. Admin Category Management
+**Simpler alternative:** Single flat rate configurable via a `site_settings` table or just hardcoded initial value that admin can change. Given scope, go with **admin-managed shipping rates table**.
 
-File: `src/routes/admin.categories.tsx`
-- Inline list with add/edit/delete
-- Fields: name, slug, sort_order
+#### Shipping harus end-to-end, bukan hanya tabel rate
 
-Server functions:
-- `getAdminCategories`, `createCategory`, `updateCategory`, `deleteCategory`
+Agar shipping benar-benar usable, implementasi wajib mencakup:
 
-### 10. Root Route Context Extension
+1. **Penyimpanan shipping ke order**
 
-File: `src/routes/__root.tsx` (edit)
-- Extend context type with `auth: { isAuthenticated: boolean; user: User | null }`
-- Add `onAuthStateChange` listener in root component
-- Pass auth state through router context
+   - Tambahkan field yang relevan pada `orders`, minimal:
 
-File: `src/router.tsx` (edit)
-- Add auth to context type
+     - `shipping_rate_id` (nullable)
 
-### 11. Footer/Contact: No changes needed
-Label WhatsApp sudah benar dari Tahap 3.
+     - `shipping_method_name`
 
-## File yang Diubah/Dibuat
+     - `shipping_cost`
 
-| File | Aksi |
-|------|------|
-| Migration SQL | `user_roles` table, `has_role()` function |
-| `src/utils/admin.functions.ts` | Baru — semua admin server functions |
-| `src/routes/admin.login.tsx` | Baru — admin login page |
-| `src/routes/admin.tsx` | Baru — admin layout (protected) |
-| `src/routes/admin.index.tsx` | Baru — dashboard |
-| `src/routes/admin.orders.tsx` | Baru — order list |
-| `src/routes/admin.orders.$id.tsx` | Baru — order detail + status management |
-| `src/routes/admin.products.tsx` | Baru — product list |
-| `src/routes/admin.products.new.tsx` | Baru — create product |
-| `src/routes/admin.products.$id.tsx` | Baru — edit product |
-| `src/routes/admin.categories.tsx` | Baru — category management |
-| `src/routes/__root.tsx` | Edit — extend context with auth |
-| `src/router.tsx` | Edit — add auth to context |
+   - Pastikan `shipping_cost` ikut dihitung ke total order final
+
+2. **Checkout integration**
+
+   - Checkout harus menampilkan opsi shipping aktif
+
+   - User wajib memilih salah satu shipping option sebelum submit
+
+   - Total pesanan harus update secara real-time setelah shipping dipilih
+
+3. **Admin management**
+
+   - Tambahkan admin management untuk shipping rates
+
+   - Minimal admin bisa:
+
+     - tambah shipping rate
+
+     - edit name/price/active/default
+
+     - nonaktifkan rate
+
+   - Jika scope ingin dijaga tetap ramping, letakkan di:
+
+     - `Settings > Shipping`
+
+     - atau route admin khusus shipping
+
+4. **Admin order visibility**
+
+   - Detail order di admin harus menampilkan:
+
+     - shipping method yang dipilih
+
+     - shipping cost
+
+     - total akhir termasuk shipping
+
+5. **Fallback rule**
+
+   - Jika belum ada shipping rate aktif, checkout tidak boleh diam-diam memakai 0 tanpa penjelasan
+
+   - Tampilkan state yang jelas atau default shipping rule yang eksplisit
+
+### 8. Multiple Product Images
+
+- Update admin product form to support multiple image uploads
+- Product detail page: image gallery with thumbnail navigation
+- QuickViewModal: show primary image (no change needed)
+- #### Multiple product images harus benar-benar operasional
+  Agar fitur ini tidak berhenti di gallery visual saja, implementasi wajib mencakup:
+  1. **Admin-side image management**
+     - upload banyak gambar
+     - hapus gambar
+     - ganti gambar
+     - pilih gambar utama `is_primary`)
+     - atur urutan tampil `sort_order`)
+  2. **Storefront behavior**
+     - product detail menampilkan gallery + thumbnail navigation
+     - product card dan quick option tetap memakai gambar utama
+     - jika gambar utama dihapus, sistem harus otomatis menentukan primary image baru yang valid
+  3. **Data integrity**
+     - setiap product tetap harus memiliki paling tidak 1 gambar valid jika status produk aktif
+     - cegah kondisi semua image hilang pada produk aktif tanpa fallback
+  4. **UX minimal**
+     - preview sebelum simpan
+     - loading state saat upload
+     - error state bila upload gagal
+
+### 9. Notification Architecture
+
+- No email provider configured, no API keys available
+- **Realistic approach:** Create `order_notifications` table to log notification events. Build the data model. Actual sending deferred to when email infrastructure is set up.
+- Add admin-visible note that notifications are logged but not yet sent automatically.
+- #### Multiple product images harus benar-benar operasional
+  Agar fitur ini tidak berhenti di gallery visual saja, implementasi wajib mencakup:
+  1. **Admin-side image management**
+     - upload banyak gambar
+     - hapus gambar
+     - ganti gambar
+     - pilih gambar utama `is_primary`)
+     - atur urutan tampil `sort_order`)
+  2. **Storefront behavior**
+     - product detail menampilkan gallery + thumbnail navigation
+     - product card dan quick option tetap memakai gambar utama
+     - jika gambar utama dihapus, sistem harus otomatis menentukan primary image baru yang valid
+  3. **Data integrity**
+     - setiap product tetap harus memiliki paling tidak 1 gambar valid jika status produk aktif
+     - cegah kondisi semua image hilang pada produk aktif tanpa fallback
+  4. **UX minimal**
+     - preview sebelum simpan
+     - loading state saat upload
+     - error state bila upload gagal
+
+### 10. Deployment Hardening
+
+- Verify all routes load without errors
+- Check env var usage
+- Add basic OG meta (already in `__root.tsx`)
+- Ensure no credentials leak in client code
+- #### Public-readiness checklist wajib
+  Sebelum tahap ini dianggap selesai, lakukan verifikasi eksplisit terhadap:
+  1. **Route safety**
+     - `/`
+     - `/shop`
+     - `/shop/$category`
+     - `/product/$slug`
+     - `/cart`
+     - `/checkout`
+     - `/order-success`
+     - `/contact`
+     - `/refund-policy`
+     - `/privacy-policy`
+     - `/terms`
+     - `/shipping-policy`
+     - `/admin/login`
+     - `/admin`
+     - `/login`
+  2. **Error handling**
+     - broken slug → not found yang benar
+     - order number invalid → state yang jelas
+     - upload gagal → error state yang jelas
+     - unauthorized admin access → redirect yang benar
+  3. **Security sanity checks**
+     - tidak ada credential hardcoded di client
+     - tidak ada admin secret bocor ke browser bundle
+     - storage path sensitif tidak diekspos sembarangan
+     - server functions sensitif tetap server-validated
+  4. **Responsive acceptance**
+     - mobile kecil
+     - mobile besar
+     - tablet portrait
+     - tablet landscape
+     - laptop
+     - desktop lebar
+     - tidak ada overflow horizontal
+     - tidak ada tombol atau input keluar layar
+     - tidak ada modal yang terpotong
+  5. **Theme acceptance**
+     - black mode default
+     - white mode konsisten
+     - preferensi tersimpan setelah refresh
+     - contrast aman di komponen penting
+  6. **Operational acceptance**
+     - checkout dengan address baru tersimpan benar
+     - shipping ikut ke total
+     - payment proof tetap jalan
+     - stock sync sesuai keputusan
+     - admin dapat membaca semua data yang relevan
+
+## File Changes Summary
+
+
+| File                                   | Action                                                               |
+| -------------------------------------- | -------------------------------------------------------------------- |
+| `src/routes/admin_.login.tsx`          | **New** — standalone admin login (fixes blank bug)                   |
+| `src/routes/admin.login.tsx`           | **Delete**                                                           |
+| `src/routes/login.tsx`                 | **New** — redirect to `/admin/login`                                 |
+| `src/routes/checkout.tsx`              | **Edit** — expanded address form                                     |
+| `src/utils/orders.functions.ts`        | **Edit** — new address fields in schema                              |
+| `src/utils/admin.functions.ts`         | **Edit** — stock decrement logic, shipping rates CRUD                |
+| `src/styles.css`                       | **Edit** — add `.light` theme variables                              |
+| `src/hooks/useTheme.tsx`               | **New** — theme context + toggle                                     |
+| `src/routes/__root.tsx`                | **Edit** — wrap with ThemeProvider, add class to `<html>`            |
+| `src/components/layout/Header.tsx`     | **Edit** — add theme toggle button                                   |
+| `src/routes/product.$slug.tsx`         | **Edit** — image gallery for multiple images                         |
+| `src/components/admin/ProductForm.tsx` | **Edit** — multiple image upload                                     |
+| `src/routes/admin.orders.$id.tsx`      | **Edit** — show new address fields                                   |
+| Migration SQL                          | Add address columns, shipping_rates table, order_notifications table |
+
+
+| `src/routes/admin.shipping.tsx` atau route admin shipping yang setara | **New/Edit** — shipping rates management UI |
+
+| `src/routes/admin.settings.tsx` | **Edit** — jika shipping diletakkan di settings |
+
+| `src/routes/admin.products.$id.tsx` | **Edit** — multiple image management detail |
+
+| `src/components/product/ProductGallery.tsx` | **New/Edit** — gallery + thumbnail navigation |
+
+| `src/components/checkout/ShippingOptions.tsx` atau komponen setara | **New/Edit** — shipping option selector |
+
+| `src/routes/login.tsx` | **New** — redirect aman ke `/admin/login` |
 
 ## Database Changes
-- Table: `user_roles` (with RLS)
-- Enum: `app_role` ('admin')
-- Function: `has_role()` (security definer)
 
-## Auth Approach
-- Supabase Auth email/password
-- `user_roles` table for role validation
-- Server-side validation via `has_role()` in every admin server function
-- Client-side route guard via `beforeLoad` + auth context
-- Auto-confirm email enabled (admin internal use only)
+1. **Alter `orders**`: add `district`, `street_address`, `address_detail` (all text nullable)
+2. **Create `shipping_rates**`: id, name, price (int), is_default (bool), active (bool), sort_order, created_at
+3. **Create `order_notifications**`: id, order_id, event_type, channel, status, created_at (foundation for future)
+4. **Alter `orders`**: tambahkan field shipping yang diperlukan agar shipping tersimpan end-to-end, minimal:
+     - `shipping_rate_id`
+     - `shipping_method_name`
+     - `shipping_cost` (gunakan kolom existing jika sudah ada dan pastikan dipakai nyata)
+5. **Pastikan struktur `product_images`** mendukung:
+     - multiple images
+     - `is_primary`
+     - `sort_order`
+     - delete/replace flow yang aman
 
 ## Yang Sengaja Tidak Dikerjakan
-- Customer auth / login
+
+- Customer auth
 - Midtrans payment gateway
-- Shipping engine / cost calculation
-- Stock auto-decrement on order
-- Notification system
-- Multiple product images gallery
-- Order export / reporting
-- Audit log
+- Courier API integration (JNE/JNT/etc)
+- Map/geocoding API
+- Automated email/WhatsApp sending (no provider configured)
+- Admin role management UI
 
-## Gap untuk Tahap 5
-1. Customer notification (email/WhatsApp saat status berubah)
-2. Stock auto-decrement on order creation
-3. Shipping cost calculation
-4. Multiple product images management
-5. SEO metadata per product
-6. Deployment hardening + custom domain
-7. Performance optimization (image CDN, caching)
+## Keputusan Teknis Utama
 
+1. `**admin_.login.tsx**` (underscore) to break parent layout relationship — cleanest TanStack Router fix
+2. **Stock decrement at `paid` status** — safest for manual transfer flow
+3. **CSS variable-based theme** — leverages existing architecture, no library needed
+4. **Shipping rates table** — admin-configurable, simple but extensible
+5. **Notification table as event log** — honest foundation without fake automation
