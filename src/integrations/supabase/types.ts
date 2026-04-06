@@ -406,11 +406,38 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      create_guest_order: {
+        Args: {
+          p_address: string
+          p_address_detail: string
+          p_city: string
+          p_customer_name: string
+          p_district: string
+          p_email: string
+          p_items: Json
+          p_order_number: string
+          p_phone: string
+          p_postal_code: string
+          p_province: string
+          p_shipping_cost: number
+          p_shipping_method_name: string
+          p_special_instructions: string
+          p_street_address: string
+          p_subtotal: number
+          p_total: number
+        }
+        Returns: Json
+      }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
           _user_id: string
         }
+        Returns: boolean
+      }
+      lookup_order: { Args: { p_order_number: string }; Returns: Json }
+      submit_order_payment_proof: {
+        Args: { p_order_number: string; p_proof_url: string }
         Returns: boolean
       }
     }
