@@ -111,12 +111,52 @@ export type Database = {
           },
         ]
       }
+      order_notifications: {
+        Row: {
+          channel: string
+          created_at: string
+          event_type: string
+          id: string
+          metadata: Json | null
+          order_id: string
+          status: string
+        }
+        Insert: {
+          channel?: string
+          created_at?: string
+          event_type: string
+          id?: string
+          metadata?: Json | null
+          order_id: string
+          status?: string
+        }
+        Update: {
+          channel?: string
+          created_at?: string
+          event_type?: string
+          id?: string
+          metadata?: Json | null
+          order_id?: string
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "order_notifications_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       orders: {
         Row: {
           address: string
+          address_detail: string | null
           city: string
           created_at: string
           customer_name: string
+          district: string | null
           email: string
           id: string
           order_number: string
@@ -128,18 +168,22 @@ export type Database = {
           postal_code: string
           province: string
           shipping_cost: number
+          shipping_method_name: string | null
           shipping_tracking: string | null
           special_instructions: string | null
           status: Database["public"]["Enums"]["order_status"]
+          street_address: string | null
           subtotal: number
           total: number
           updated_at: string
         }
         Insert: {
           address: string
+          address_detail?: string | null
           city: string
           created_at?: string
           customer_name: string
+          district?: string | null
           email: string
           id?: string
           order_number: string
@@ -151,18 +195,22 @@ export type Database = {
           postal_code: string
           province: string
           shipping_cost?: number
+          shipping_method_name?: string | null
           shipping_tracking?: string | null
           special_instructions?: string | null
           status?: Database["public"]["Enums"]["order_status"]
+          street_address?: string | null
           subtotal?: number
           total?: number
           updated_at?: string
         }
         Update: {
           address?: string
+          address_detail?: string | null
           city?: string
           created_at?: string
           customer_name?: string
+          district?: string | null
           email?: string
           id?: string
           order_number?: string
@@ -174,9 +222,11 @@ export type Database = {
           postal_code?: string
           province?: string
           shipping_cost?: number
+          shipping_method_name?: string | null
           shipping_tracking?: string | null
           special_instructions?: string | null
           status?: Database["public"]["Enums"]["order_status"]
+          street_address?: string | null
           subtotal?: number
           total?: number
           updated_at?: string
@@ -302,6 +352,36 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      shipping_rates: {
+        Row: {
+          active: boolean
+          created_at: string
+          id: string
+          is_default: boolean
+          name: string
+          price: number
+          sort_order: number
+        }
+        Insert: {
+          active?: boolean
+          created_at?: string
+          id?: string
+          is_default?: boolean
+          name: string
+          price?: number
+          sort_order?: number
+        }
+        Update: {
+          active?: boolean
+          created_at?: string
+          id?: string
+          is_default?: boolean
+          name?: string
+          price?: number
+          sort_order?: number
+        }
+        Relationships: []
       }
       user_roles: {
         Row: {
