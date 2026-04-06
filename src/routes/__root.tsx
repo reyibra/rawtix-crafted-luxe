@@ -9,6 +9,7 @@ import "@fontsource/space-grotesk/700.css";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
 import { CartProvider } from "@/hooks/useCart";
+import { ThemeProvider } from "@/hooks/useTheme";
 
 function NotFoundComponent() {
   return (
@@ -69,20 +70,22 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   return (
     <QueryClientProvider client={queryClient}>
-      <CartProvider>
-        <Outlet />
-        <Toaster
-          position="bottom-right"
-          toastOptions={{
-            style: {
-              background: "oklch(0.1 0 0)",
-              color: "oklch(0.96 0 0)",
-              border: "1px solid oklch(1 0 0 / 10%)",
-              borderRadius: "2px",
-            },
-          }}
-        />
-      </CartProvider>
+      <ThemeProvider>
+        <CartProvider>
+          <Outlet />
+          <Toaster
+            position="bottom-right"
+            toastOptions={{
+              style: {
+                background: "var(--card)",
+                color: "var(--foreground)",
+                border: "1px solid var(--border)",
+                borderRadius: "2px",
+              },
+            }}
+          />
+        </CartProvider>
+      </ThemeProvider>
     </QueryClientProvider>
   );
 }
