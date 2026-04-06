@@ -3,7 +3,7 @@ import { useState, type FormEvent } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { verifyAdmin } from "@/utils/admin.functions";
 
-export const Route = createFileRoute("/admin/login")({
+export const Route = createFileRoute("/admin_/login")({
   component: AdminLoginPage,
 });
 
@@ -23,7 +23,6 @@ function AdminLoginPage() {
       const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password });
       if (authError) throw authError;
 
-      // Verify admin role server-side
       await verifyAdmin({ data: { token: data.session.access_token } });
 
       navigate({ to: "/admin" });

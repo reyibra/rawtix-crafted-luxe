@@ -34,6 +34,11 @@ function AdminNewProductPage() {
           sortOrder: formData.sortOrder,
           variants: formData.variants,
           imageUrl: formData.imageUrl,
+          imageUrls: formData.imageUrls?.map((img) => ({
+            url: img.url,
+            isPrimary: img.isPrimary,
+            sortOrder: img.sortOrder,
+          })),
         },
       }),
     onSuccess: () => {

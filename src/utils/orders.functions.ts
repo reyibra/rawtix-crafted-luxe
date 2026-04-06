@@ -16,11 +16,17 @@ const orderInputSchema = z.object({
   email: z.string().trim().email().max(255),
   phone: z.string().trim().min(8).max(20).regex(/^[\d\s+\-()]+$/),
   customerName: z.string().trim().min(1).max(255),
-  address: z.string().trim().min(1).max(500),
-  city: z.string().trim().min(1).max(100),
+  address: z.string().trim().min(1).max(1000),
   province: z.string().trim().min(1).max(100),
+  city: z.string().trim().min(1).max(100),
+  district: z.string().trim().max(100).optional().default(""),
   postalCode: z.string().trim().min(3).max(10).regex(/^[\d\-]+$/),
+  streetAddress: z.string().trim().max(500).optional().default(""),
+  addressDetail: z.string().trim().max(500).optional().default(""),
   specialInstructions: z.string().max(1000).optional().default(""),
+  shippingRateId: z.string().uuid().optional(),
+  shippingMethodName: z.string().max(100).optional().default(""),
+  shippingCost: z.number().int().min(0).optional().default(0),
   items: z.array(cartItemSchema).min(1).max(50),
 });
 
@@ -38,7 +44,7 @@ export const createOrder = createServerFn({ method: "POST" })
       (sum, item) => sum + item.price * item.quantity,
       0
     );
-    const shippingCost = 0;
+    const shippingCost = data.shippingCost ?? 0;
     const total = subtotal + shippingCost;
 
     const { data: order, error: orderError } = await supabaseAdmin
@@ -51,8 +57,12 @@ export const createOrder = createServerFn({ method: "POST" })
         address: data.address,
         city: data.city,
         province: data.province,
+        district: data.district || null,
         postal_code: data.postalCode,
+        street_address: data.streetAddress || null,
+        address_detail: data.addressDetail || null,
         special_instructions: data.specialInstructions || null,
+        shipping_method_name: data.shippingMethodName || null,
         subtotal,
         shipping_cost: shippingCost,
         total,
@@ -85,6 +95,14 @@ export const createOrder = createServerFn({ method: "POST" })
       await supabaseAdmin.from("orders").delete().eq("id", order.id);
       throw new Error("Gagal menyimpan item pesanan. Silakan coba lagi.");
     }
+
+    // Log notification event
+    await supabaseAdmin.from("order_notifications").insert({
+      order_id: order.id,
+      event_type: "order_created",
+      channel: "email",
+      status: "pending",
+    });
 
     return {
       orderNumber: order.order_number,
@@ -124,6 +142,14 @@ export const submitPaymentProof = createServerFn({ method: "POST" })
       console.error("Payment proof update error:", updateError);
       throw new Error("Gagal menyimpan bukti pembayaran. Silakan coba lagi.");
     }
+
+    // Log notification event
+    await supabaseAdmin.from("order_notifications").insert({
+      order_id: order.id,
+      event_type: "payment_proof_submitted",
+      channel: "email",
+      status: "pending",
+    });
 
     return { success: true };
   });

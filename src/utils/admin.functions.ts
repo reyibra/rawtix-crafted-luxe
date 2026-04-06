@@ -122,12 +122,87 @@ export const updateOrderStatus = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await assertAdmin(data.token);
 
+    // Get current order to check previous status
+    const { data: currentOrder, error: fetchErr } = await supabaseAdmin
+      .from("orders")
+      .select("status")
+      .eq("id", data.orderId)
+      .single();
+
+    if (fetchErr || !currentOrder) throw new Error("Pesanan tidak ditemukan");
+
+    const prevStatus = currentOrder.status;
+    const newStatus = data.status;
+
+    // Update status
     const { error } = await supabaseAdmin
       .from("orders")
-      .update({ status: data.status })
+      .update({ status: newStatus })
       .eq("id", data.orderId);
 
     if (error) throw new Error("Gagal mengupdate status");
+
+    // Stock auto-decrement: when status changes TO paid
+    if (newStatus === "paid" && prevStatus !== "paid") {
+      const { data: orderItems } = await supabaseAdmin
+        .from("order_items")
+        .select("variant_id, quantity")
+        .eq("order_id", data.orderId);
+
+      if (orderItems) {
+        for (const item of orderItems) {
+          if (!item.variant_id) continue;
+          const { data: variant } = await supabaseAdmin
+            .from("product_variants")
+            .select("stock")
+            .eq("id", item.variant_id)
+            .single();
+
+          if (variant) {
+            const newStock = Math.max(0, variant.stock - item.quantity);
+            await supabaseAdmin
+              .from("product_variants")
+              .update({ stock: newStock })
+              .eq("id", item.variant_id);
+          }
+        }
+      }
+    }
+
+    // Stock restore: when cancelling from paid/processing/shipped
+    if (newStatus === "cancelled" && ["paid", "processing", "shipped"].includes(prevStatus)) {
+      const { data: orderItems } = await supabaseAdmin
+        .from("order_items")
+        .select("variant_id, quantity")
+        .eq("order_id", data.orderId);
+
+      if (orderItems) {
+        for (const item of orderItems) {
+          if (!item.variant_id) continue;
+          const { data: variant } = await supabaseAdmin
+            .from("product_variants")
+            .select("stock")
+            .eq("id", item.variant_id)
+            .single();
+
+          if (variant) {
+            await supabaseAdmin
+              .from("product_variants")
+              .update({ stock: variant.stock + item.quantity })
+              .eq("id", item.variant_id);
+          }
+        }
+      }
+    }
+
+    // Log notification
+    await supabaseAdmin.from("order_notifications").insert({
+      order_id: data.orderId,
+      event_type: `status_${newStatus}`,
+      channel: "email",
+      status: "pending",
+    });
+
     return { success: true };
   });
 
@@ -164,6 +239,11 @@ const productSchema = z.object({
     sku: z.string().max(100).optional(),
   })).default([]),
   imageUrl: z.string().max(2000).optional(),
+  imageUrls: z.array(z.object({
+    url: z.string().max(2000),
+    isPrimary: z.boolean(),
+    sortOrder: z.number().int(),
+  })).optional(),
 });
 
 export const createProduct = createServerFn({ method: "POST" })
@@ -199,7 +279,16 @@ export const createProduct = createServerFn({ method: "POST" })
       await supabaseAdmin.from("product_variants").insert(variantRows);
     }
 
-    if (data.imageUrl) {
+    // Multiple images support
+    if (data.imageUrls && data.imageUrls.length > 0) {
+      const imageRows = data.imageUrls.map((img) => ({
+        product_id: product.id,
+        url: img.url,
+        is_primary: img.isPrimary,
+        sort_order: img.sortOrder,
+      }));
+      await supabaseAdmin.from("product_images").insert(imageRows);
+    } else if (data.imageUrl) {
       await supabaseAdmin.from("product_images").insert({
         product_id: product.id,
         url: data.imageUrl,
@@ -230,6 +319,12 @@ const updateProductSchema = z.object({
     sku: z.string().max(100).optional(),
   })).default([]),
   imageUrl: z.string().max(2000).optional(),
+  imageUrls: z.array(z.object({
+    id: z.string().uuid().optional(),
+    url: z.string().max(2000),
+    isPrimary: z.boolean(),
+    sortOrder: z.number().int(),
+  })).optional(),
 });
 
 export const updateProduct = createServerFn({ method: "POST" })
@@ -254,7 +349,7 @@ export const updateProduct = createServerFn({ method: "POST" })
 
     if (error) throw new Error("Gagal mengupdate produk");
 
-    // Replace variants: delete old, insert new
+    // Replace variants
     await supabaseAdmin.from("product_variants").delete().eq("product_id", data.id);
     if (data.variants.length > 0) {
       const variantRows = data.variants.map((v) => ({
@@ -266,8 +361,17 @@ export const updateProduct = createServerFn({ method: "POST" })
       await supabaseAdmin.from("product_variants").insert(variantRows);
     }
 
-    // Update primary image if provided
-    if (data.imageUrl) {
+    // Replace images
+    if (data.imageUrls && data.imageUrls.length > 0) {
+      await supabaseAdmin.from("product_images").delete().eq("product_id", data.id);
+      const imageRows = data.imageUrls.map((img) => ({
+        product_id: data.id,
+        url: img.url,
+        is_primary: img.isPrimary,
+        sort_order: img.sortOrder,
+      }));
+      await supabaseAdmin.from("product_images").insert(imageRows);
+    } else if (data.imageUrl) {
       const { data: existingImg } = await supabaseAdmin
         .from("product_images")
         .select("id")
@@ -302,13 +406,10 @@ export const deleteProduct = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => deleteProductSchema.parse(input))
   .handler(async ({ data }) => {
     await assertAdmin(data.token);
-
-    // Set to draft instead of hard delete (safe)
     const { error } = await supabaseAdmin
       .from("products")
       .update({ status: "draft" })
       .eq("id", data.id);
-
     if (error) throw new Error("Gagal menghapus produk");
     return { success: true };
   });
@@ -318,12 +419,10 @@ export const getAdminCategories = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => tokenSchema.parse(input))
   .handler(async ({ data }) => {
     await assertAdmin(data.token);
-
     const { data: categories, error } = await supabaseAdmin
       .from("categories")
       .select("*")
       .order("sort_order", { ascending: true });
-
     if (error) throw new Error("Gagal memuat kategori");
     return { categories: categories ?? [] };
   });
@@ -339,13 +438,11 @@ export const createCategory = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => categorySchema.parse(input))
   .handler(async ({ data }) => {
     await assertAdmin(data.token);
-
     const { data: cat, error } = await supabaseAdmin
       .from("categories")
       .insert({ name: data.name, slug: data.slug, sort_order: data.sortOrder })
       .select("id")
       .single();
-
     if (error) throw new Error("Gagal membuat kategori: " + error.message);
     return { id: cat.id };
   });
@@ -362,12 +459,10 @@ export const updateCategory = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => updateCategorySchema.parse(input))
   .handler(async ({ data }) => {
     await assertAdmin(data.token);
-
     const { error } = await supabaseAdmin
       .from("categories")
       .update({ name: data.name, slug: data.slug, sort_order: data.sortOrder })
       .eq("id", data.id);
-
     if (error) throw new Error("Gagal mengupdate kategori");
     return { success: true };
   });
@@ -381,18 +476,135 @@ export const deleteCategory = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => deleteCategorySchema.parse(input))
   .handler(async ({ data }) => {
     await assertAdmin(data.token);
-
-    // Unassign products first
     await supabaseAdmin
       .from("products")
       .update({ category_id: null })
       .eq("category_id", data.id);
-
     const { error } = await supabaseAdmin
       .from("categories")
       .delete()
       .eq("id", data.id);
-
     if (error) throw new Error("Gagal menghapus kategori");
+    return { success: true };
+  });
+
+// ─── Shipping Rates ───
+export const getAdminShippingRates = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => tokenSchema.parse(input))
+  .handler(async ({ data }) => {
+    await assertAdmin(data.token);
+    const { data: rates, error } = await supabaseAdmin
+      .from("shipping_rates")
+      .select("*")
+      .order("sort_order", { ascending: true });
+    if (error) throw new Error("Gagal memuat shipping rates");
+    return { rates: rates ?? [] };
+  });
+
+const shippingRateSchema = z.object({
+  token: z.string().min(1),
+  name: z.string().min(1).max(100),
+  price: z.number().int().min(0),
+  isDefault: z.boolean().default(false),
+  active: z.boolean().default(true),
+  sortOrder: z.number().int().default(0),
+});
+
+export const createShippingRate = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => shippingRateSchema.parse(input))
+  .handler(async ({ data }) => {
+    await assertAdmin(data.token);
+    if (data.isDefault) {
+      await supabaseAdmin.from("shipping_rates").update({ is_default: false }).eq("is_default", true);
+    }
+    const { data: rate, error } = await supabaseAdmin
+      .from("shipping_rates")
+      .insert({ name: data.name, price: data.price, is_default: data.isDefault, active: data.active, sort_order: data.sortOrder })
+      .select("id")
+      .single();
+    if (error) throw new Error("Gagal membuat shipping rate");
+    return { id: rate.id };
+  });
+
+const updateShippingRateSchema = z.object({
+  token: z.string().min(1),
+  id: z.string().uuid(),
+  name: z.string().min(1).max(100),
+  price: z.number().int().min(0),
+  isDefault: z.boolean().default(false),
+  active: z.boolean().default(true),
+  sortOrder: z.number().int().default(0),
+});
+
+export const updateShippingRate = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => updateShippingRateSchema.parse(input))
+  .handler(async ({ data }) => {
+    await assertAdmin(data.token);
+    if (data.isDefault) {
+      await supabaseAdmin.from("shipping_rates").update({ is_default: false }).eq("is_default", true);
+    }
+    const { error } = await supabaseAdmin
+      .from("shipping_rates")
+      .update({ name: data.name, price: data.price, is_default: data.isDefault, active: data.active, sort_order: data.sortOrder })
+      .eq("id", data.id);
+    if (error) throw new Error("Gagal mengupdate shipping rate");
+    return { success: true };
+  });
+
+const deleteShippingRateSchema = z.object({
+  token: z.string().min(1),
+  id: z.string().uuid(),
+});
+
+export const deleteShippingRate = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => deleteShippingRateSchema.parse(input))
+  .handler(async ({ data }) => {
+    await assertAdmin(data.token);
+    const { error } = await supabaseAdmin
+      .from("shipping_rates")
+      .delete()
+      .eq("id", data.id);
+    if (error) throw new Error("Gagal menghapus shipping rate");
+    return { success: true };
+  });
+
+// ─── Admin Image Management ───
+const deleteImageSchema = z.object({
+  token: z.string().min(1),
+  imageId: z.string().uuid(),
+  productId: z.string().uuid(),
+});
+
+export const deleteProductImage = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => deleteImageSchema.parse(input))
+  .handler(async ({ data }) => {
+    await assertAdmin(data.token);
+
+    const { data: img } = await supabaseAdmin
+      .from("product_images")
+      .select("is_primary")
+      .eq("id", data.imageId)
+      .single();
+
+    await supabaseAdmin.from("product_images").delete().eq("id", data.imageId);
+
+    // If deleted image was primary, set next image as primary
+    if (img?.is_primary) {
+      const { data: nextImg } = await supabaseAdmin
+        .from("product_images")
+        .select("id")
+        .eq("product_id", data.productId)
+        .order("sort_order", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      if (nextImg) {
+        await supabaseAdmin
+          .from("product_images")
+          .update({ is_primary: true })
+          .eq("id", nextImg.id);
+      }
+    }
+
     return { success: true };
   });

@@ -55,11 +55,11 @@ function AdminOrderDetailPage() {
 
   return (
     <div className="space-y-6 max-w-4xl">
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <Link to="/admin/orders" className="text-muted-foreground hover:text-foreground">
           <ArrowLeft className="w-4 h-4" />
         </Link>
-        <h1 className="font-heading text-lg font-bold tracking-wider uppercase text-foreground">
+        <h1 className="font-heading text-base sm:text-lg font-bold tracking-wider uppercase text-foreground">
           {order.order_number}
         </h1>
         <span className="px-2 py-0.5 text-[10px] tracking-wider uppercase bg-accent text-accent-foreground">
@@ -102,15 +102,20 @@ function AdminOrderDetailPage() {
         </div>
       )}
 
-      <div className="grid md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Customer info */}
         <div className="border border-border p-4 space-y-2">
           <h2 className="text-xs tracking-wider uppercase text-muted-foreground mb-3">Customer</h2>
           <InfoRow label="Nama" value={order.customer_name} />
           <InfoRow label="Email" value={order.email} />
           <InfoRow label="Telepon" value={order.phone || "—"} />
+          <InfoRow label="Provinsi" value={order.province} />
+          <InfoRow label="Kota" value={order.city} />
+          {order.district && <InfoRow label="Kecamatan" value={order.district} />}
+          <InfoRow label="Kode Pos" value={order.postal_code} />
+          {order.street_address && <InfoRow label="Jalan" value={order.street_address} />}
+          {order.address_detail && <InfoRow label="Detail" value={order.address_detail} />}
           <InfoRow label="Alamat" value={order.address} />
-          <InfoRow label="Kota" value={`${order.city}, ${order.province} ${order.postal_code}`} />
           {order.special_instructions && (
             <InfoRow label="Catatan" value={order.special_instructions} />
           )}
@@ -118,11 +123,13 @@ function AdminOrderDetailPage() {
 
         {/* Payment info */}
         <div className="border border-border p-4 space-y-2">
-          <h2 className="text-xs tracking-wider uppercase text-muted-foreground mb-3">Pembayaran</h2>
+          <h2 className="text-xs tracking-wider uppercase text-muted-foreground mb-3">Pembayaran & Pengiriman</h2>
           <InfoRow label="Metode" value={order.payment_method || "—"} />
           <InfoRow label="Subtotal" value={`Rp ${order.subtotal.toLocaleString("id-ID")}`} />
+          {order.shipping_method_name && <InfoRow label="Pengiriman" value={order.shipping_method_name} />}
           <InfoRow label="Ongkir" value={`Rp ${order.shipping_cost.toLocaleString("id-ID")}`} />
           <InfoRow label="Total" value={`Rp ${order.total.toLocaleString("id-ID")}`} />
+          {order.shipping_tracking && <InfoRow label="Resi" value={order.shipping_tracking} />}
           <InfoRow
             label="Bukti"
             value={
