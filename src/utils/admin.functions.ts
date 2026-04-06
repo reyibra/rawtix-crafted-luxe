@@ -77,7 +77,7 @@ export const getAdminOrders = createServerFn({ method: "POST" })
       .range(from, to);
 
     if (data.status && data.status !== "all") {
-      query = query.eq("status", data.status);
+      query = query.eq("status", data.status as "pending" | "paid" | "processing" | "shipped" | "delivered" | "cancelled");
     }
 
     const { data: orders, count, error } = await query;
