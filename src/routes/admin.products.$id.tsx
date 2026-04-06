@@ -46,6 +46,11 @@ function AdminEditProductPage() {
           sortOrder: formData.sortOrder,
           variants: formData.variants,
           imageUrl: formData.imageUrl,
+          imageUrls: formData.imageUrls?.map((img) => ({
+            url: img.url,
+            isPrimary: img.isPrimary,
+            sortOrder: img.sortOrder,
+          })),
         },
       }),
     onSuccess: () => {
@@ -64,7 +69,12 @@ function AdminEditProductPage() {
     );
   }
 
-  const primaryImage = product.product_images?.find((img: { is_primary: boolean }) => img.is_primary);
+  const existingImages = product.product_images?.map((img: { id: string; url: string; is_primary: boolean; sort_order: number }) => ({
+    id: img.id,
+    url: img.url,
+    isPrimary: img.is_primary,
+    sortOrder: img.sort_order,
+  })) ?? [];
 
   const initialData: ProductFormData = {
     name: product.name,
@@ -81,7 +91,8 @@ function AdminEditProductPage() {
       stock: v.stock,
       sku: v.sku || "",
     })) ?? [],
-    imageUrl: primaryImage?.url || "",
+    imageUrl: "",
+    imageUrls: existingImages,
   };
 
   return (
