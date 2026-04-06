@@ -1,21 +1,32 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import { supabaseAdmin } from "@/integrations/supabase/client.server";
+import { createClient } from "@supabase/supabase-js";
+import type { Database } from "@/integrations/supabase/types";
+
+// ─── Authenticated Supabase client helper ───
+function createAuthClient(token: string) {
+  const url = process.env.SUPABASE_URL || import.meta.env.VITE_SUPABASE_URL;
+  const key = process.env.SUPABASE_PUBLISHABLE_KEY || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !key) throw new Error("Missing Supabase environment variables");
+  return createClient<Database>(url, key, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
+    auth: { storage: undefined, persistSession: false, autoRefreshToken: false },
+  });
+}
 
 // ─── Admin verification helper ───
 async function assertAdmin(token: string) {
-  const { data, error } = await supabaseAdmin.auth.getUser(token);
+  const client = createAuthClient(token);
+  const { data, error } = await client.auth.getUser();
   if (error || !data.user) throw new Error("Unauthorized");
 
-  const { data: roleRow } = await supabaseAdmin
-    .from("user_roles")
-    .select("role")
-    .eq("user_id", data.user.id)
-    .eq("role", "admin")
-    .maybeSingle();
+  const { data: isAdmin } = await client.rpc("has_role", {
+    _user_id: data.user.id,
+    _role: "admin",
+  });
 
-  if (!roleRow) throw new Error("Forbidden: not an admin");
-  return data.user;
+  if (!isAdmin) throw new Error("Forbidden: not an admin");
+  return { user: data.user, client };
 }
 
 const tokenSchema = z.object({ token: z.string().min(1) });
@@ -23,7 +34,7 @@ const tokenSchema = z.object({ token: z.string().min(1) });
 export const verifyAdmin = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => tokenSchema.parse(input))
   .handler(async ({ data }) => {
-    const user = await assertAdmin(data.token);
+    const { user } = await assertAdmin(data.token);
     return { id: user.id, email: user.email };
   });
 
@@ -31,16 +42,16 @@ export const verifyAdmin = createServerFn({ method: "POST" })
 export const getAdminDashboardStats = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => tokenSchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
+    const { client } = await assertAdmin(data.token);
 
     const [orders, products, pendingOrders, proofOrders] = await Promise.all([
-      supabaseAdmin.from("orders").select("id", { count: "exact", head: true }),
-      supabaseAdmin.from("products").select("id", { count: "exact", head: true }),
-      supabaseAdmin.from("orders").select("id", { count: "exact", head: true }).eq("status", "pending"),
-      supabaseAdmin.from("orders").select("id", { count: "exact", head: true }).not("payment_proof_url", "is", null),
+      client.from("orders").select("id", { count: "exact", head: true }),
+      client.from("products").select("id", { count: "exact", head: true }),
+      client.from("orders").select("id", { count: "exact", head: true }).eq("status", "pending"),
+      client.from("orders").select("id", { count: "exact", head: true }).not("payment_proof_url", "is", null),
     ]);
 
-    const { data: recentOrders } = await supabaseAdmin
+    const { data: recentOrders } = await client
       .from("orders")
       .select("id, order_number, customer_name, total, status, created_at, payment_proof_url")
       .order("created_at", { ascending: false })
@@ -66,11 +77,11 @@ const ordersFilterSchema = z.object({
 export const getAdminOrders = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => ordersFilterSchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
+    const { client } = await assertAdmin(data.token);
     const from = (data.page - 1) * data.perPage;
     const to = from + data.perPage - 1;
 
-    let query = supabaseAdmin
+    let query = client
       .from("orders")
       .select("id, order_number, customer_name, email, phone, total, status, created_at, payment_proof_url, payment_proof_submitted_at", { count: "exact" })
       .order("created_at", { ascending: false })
@@ -93,9 +104,9 @@ const orderDetailSchema = z.object({
 export const getAdminOrderDetail = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => orderDetailSchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
+    const { client } = await assertAdmin(data.token);
 
-    const { data: order, error } = await supabaseAdmin
+    const { data: order, error } = await client
       .from("orders")
       .select("*")
       .eq("id", data.orderId)
@@ -103,7 +114,7 @@ export const getAdminOrderDetail = createServerFn({ method: "POST" })
 
     if (error || !order) throw new Error("Pesanan tidak ditemukan");
 
-    const { data: items } = await supabaseAdmin
+    const { data: items } = await client
       .from("order_items")
       .select("*")
       .eq("order_id", order.id);
@@ -120,10 +131,10 @@ const updateStatusSchema = z.object({
 export const updateOrderStatus = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => updateStatusSchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
+    const { client } = await assertAdmin(data.token);
 
     // Get current order to check previous status
-    const { data: currentOrder, error: fetchErr } = await supabaseAdmin
+    const { data: currentOrder, error: fetchErr } = await client
       .from("orders")
       .select("status")
       .eq("id", data.orderId)
@@ -135,7 +146,7 @@ export const updateOrderStatus = createServerFn({ method: "POST" })
     const newStatus = data.status;
 
     // Update status
-    const { error } = await supabaseAdmin
+    const { error } = await client
       .from("orders")
       .update({ status: newStatus })
       .eq("id", data.orderId);
@@ -144,7 +155,7 @@ export const updateOrderStatus = createServerFn({ method: "POST" })
 
     // Stock auto-decrement: when status changes TO paid
     if (newStatus === "paid" && prevStatus !== "paid") {
-      const { data: orderItems } = await supabaseAdmin
+      const { data: orderItems } = await client
         .from("order_items")
         .select("variant_id, quantity")
         .eq("order_id", data.orderId);
@@ -152,7 +163,7 @@ export const updateOrderStatus = createServerFn({ method: "POST" })
       if (orderItems) {
         for (const item of orderItems) {
           if (!item.variant_id) continue;
-          const { data: variant } = await supabaseAdmin
+          const { data: variant } = await client
             .from("product_variants")
             .select("stock")
             .eq("id", item.variant_id)
@@ -160,7 +171,7 @@ export const updateOrderStatus = createServerFn({ method: "POST" })
 
           if (variant) {
             const newStock = Math.max(0, variant.stock - item.quantity);
-            await supabaseAdmin
+            await client
               .from("product_variants")
               .update({ stock: newStock })
               .eq("id", item.variant_id);
@@ -171,7 +182,7 @@ export const updateOrderStatus = createServerFn({ method: "POST" })
 
     // Stock restore: when cancelling from paid/processing/shipped
     if (newStatus === "cancelled" && ["paid", "processing", "shipped"].includes(prevStatus)) {
-      const { data: orderItems } = await supabaseAdmin
+      const { data: orderItems } = await client
         .from("order_items")
         .select("variant_id, quantity")
         .eq("order_id", data.orderId);
@@ -179,14 +190,14 @@ export const updateOrderStatus = createServerFn({ method: "POST" })
       if (orderItems) {
         for (const item of orderItems) {
           if (!item.variant_id) continue;
-          const { data: variant } = await supabaseAdmin
+          const { data: variant } = await client
             .from("product_variants")
             .select("stock")
             .eq("id", item.variant_id)
             .single();
 
           if (variant) {
-            await supabaseAdmin
+            await client
               .from("product_variants")
               .update({ stock: variant.stock + item.quantity })
               .eq("id", item.variant_id);
@@ -196,7 +207,7 @@ export const updateOrderStatus = createServerFn({ method: "POST" })
     }
 
     // Log notification
-    await supabaseAdmin.from("order_notifications").insert({
+    await client.from("order_notifications").insert({
       order_id: data.orderId,
       event_type: `status_${newStatus}`,
       channel: "email",
@@ -210,9 +221,9 @@ export const updateOrderStatus = createServerFn({ method: "POST" })
 export const getAdminProducts = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => tokenSchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
+    const { client } = await assertAdmin(data.token);
 
-    const { data: products, error } = await supabaseAdmin
+    const { data: products, error } = await client
       .from("products")
       .select("*, categories(name), product_images(id, url, is_primary, sort_order), product_variants(id, size, stock, sku)")
       .order("sort_order", { ascending: true })
@@ -249,9 +260,9 @@ const productSchema = z.object({
 export const createProduct = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => productSchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
+    const { client } = await assertAdmin(data.token);
 
-    const { data: product, error } = await supabaseAdmin
+    const { data: product, error } = await client
       .from("products")
       .insert({
         name: data.name,
@@ -276,7 +287,7 @@ export const createProduct = createServerFn({ method: "POST" })
         stock: v.stock,
         sku: v.sku || null,
       }));
-      await supabaseAdmin.from("product_variants").insert(variantRows);
+      await client.from("product_variants").insert(variantRows);
     }
 
     // Multiple images support
@@ -287,9 +298,9 @@ export const createProduct = createServerFn({ method: "POST" })
         is_primary: img.isPrimary,
         sort_order: img.sortOrder,
       }));
-      await supabaseAdmin.from("product_images").insert(imageRows);
+      await client.from("product_images").insert(imageRows);
     } else if (data.imageUrl) {
-      await supabaseAdmin.from("product_images").insert({
+      await client.from("product_images").insert({
         product_id: product.id,
         url: data.imageUrl,
         is_primary: true,
@@ -330,9 +341,9 @@ const updateProductSchema = z.object({
 export const updateProduct = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => updateProductSchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
+    const { client } = await assertAdmin(data.token);
 
-    const { error } = await supabaseAdmin
+    const { error } = await client
       .from("products")
       .update({
         name: data.name,
@@ -350,7 +361,7 @@ export const updateProduct = createServerFn({ method: "POST" })
     if (error) throw new Error("Gagal mengupdate produk");
 
     // Replace variants
-    await supabaseAdmin.from("product_variants").delete().eq("product_id", data.id);
+    await client.from("product_variants").delete().eq("product_id", data.id);
     if (data.variants.length > 0) {
       const variantRows = data.variants.map((v) => ({
         product_id: data.id,
@@ -358,21 +369,21 @@ export const updateProduct = createServerFn({ method: "POST" })
         stock: v.stock,
         sku: v.sku || null,
       }));
-      await supabaseAdmin.from("product_variants").insert(variantRows);
+      await client.from("product_variants").insert(variantRows);
     }
 
     // Replace images
     if (data.imageUrls && data.imageUrls.length > 0) {
-      await supabaseAdmin.from("product_images").delete().eq("product_id", data.id);
+      await client.from("product_images").delete().eq("product_id", data.id);
       const imageRows = data.imageUrls.map((img) => ({
         product_id: data.id,
         url: img.url,
         is_primary: img.isPrimary,
         sort_order: img.sortOrder,
       }));
-      await supabaseAdmin.from("product_images").insert(imageRows);
+      await client.from("product_images").insert(imageRows);
     } else if (data.imageUrl) {
-      const { data: existingImg } = await supabaseAdmin
+      const { data: existingImg } = await client
         .from("product_images")
         .select("id")
         .eq("product_id", data.id)
@@ -380,12 +391,12 @@ export const updateProduct = createServerFn({ method: "POST" })
         .maybeSingle();
 
       if (existingImg) {
-        await supabaseAdmin
+        await client
           .from("product_images")
           .update({ url: data.imageUrl })
           .eq("id", existingImg.id);
       } else {
-        await supabaseAdmin.from("product_images").insert({
+        await client.from("product_images").insert({
           product_id: data.id,
           url: data.imageUrl,
           is_primary: true,
@@ -405,8 +416,8 @@ const deleteProductSchema = z.object({
 export const deleteProduct = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => deleteProductSchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
-    const { error } = await supabaseAdmin
+    const { client } = await assertAdmin(data.token);
+    const { error } = await client
       .from("products")
       .update({ status: "draft" })
       .eq("id", data.id);
@@ -418,8 +429,8 @@ export const deleteProduct = createServerFn({ method: "POST" })
 export const getAdminCategories = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => tokenSchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
-    const { data: categories, error } = await supabaseAdmin
+    const { client } = await assertAdmin(data.token);
+    const { data: categories, error } = await client
       .from("categories")
       .select("*")
       .order("sort_order", { ascending: true });
@@ -437,8 +448,8 @@ const categorySchema = z.object({
 export const createCategory = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => categorySchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
-    const { data: cat, error } = await supabaseAdmin
+    const { client } = await assertAdmin(data.token);
+    const { data: cat, error } = await client
       .from("categories")
       .insert({ name: data.name, slug: data.slug, sort_order: data.sortOrder })
       .select("id")
@@ -458,8 +469,8 @@ const updateCategorySchema = z.object({
 export const updateCategory = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => updateCategorySchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
-    const { error } = await supabaseAdmin
+    const { client } = await assertAdmin(data.token);
+    const { error } = await client
       .from("categories")
       .update({ name: data.name, slug: data.slug, sort_order: data.sortOrder })
       .eq("id", data.id);
@@ -475,12 +486,12 @@ const deleteCategorySchema = z.object({
 export const deleteCategory = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => deleteCategorySchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
-    await supabaseAdmin
+    const { client } = await assertAdmin(data.token);
+    await client
       .from("products")
       .update({ category_id: null })
       .eq("category_id", data.id);
-    const { error } = await supabaseAdmin
+    const { error } = await client
       .from("categories")
       .delete()
       .eq("id", data.id);
@@ -492,8 +503,8 @@ export const deleteCategory = createServerFn({ method: "POST" })
 export const getAdminShippingRates = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => tokenSchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
-    const { data: rates, error } = await supabaseAdmin
+    const { client } = await assertAdmin(data.token);
+    const { data: rates, error } = await client
       .from("shipping_rates")
       .select("*")
       .order("sort_order", { ascending: true });
@@ -513,11 +524,11 @@ const shippingRateSchema = z.object({
 export const createShippingRate = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => shippingRateSchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
+    const { client } = await assertAdmin(data.token);
     if (data.isDefault) {
-      await supabaseAdmin.from("shipping_rates").update({ is_default: false }).eq("is_default", true);
+      await client.from("shipping_rates").update({ is_default: false }).eq("is_default", true);
     }
-    const { data: rate, error } = await supabaseAdmin
+    const { data: rate, error } = await client
       .from("shipping_rates")
       .insert({ name: data.name, price: data.price, is_default: data.isDefault, active: data.active, sort_order: data.sortOrder })
       .select("id")
@@ -539,11 +550,11 @@ const updateShippingRateSchema = z.object({
 export const updateShippingRate = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => updateShippingRateSchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
+    const { client } = await assertAdmin(data.token);
     if (data.isDefault) {
-      await supabaseAdmin.from("shipping_rates").update({ is_default: false }).eq("is_default", true);
+      await client.from("shipping_rates").update({ is_default: false }).eq("is_default", true);
     }
-    const { error } = await supabaseAdmin
+    const { error } = await client
       .from("shipping_rates")
       .update({ name: data.name, price: data.price, is_default: data.isDefault, active: data.active, sort_order: data.sortOrder })
       .eq("id", data.id);
@@ -559,8 +570,8 @@ const deleteShippingRateSchema = z.object({
 export const deleteShippingRate = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => deleteShippingRateSchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
-    const { error } = await supabaseAdmin
+    const { client } = await assertAdmin(data.token);
+    const { error } = await client
       .from("shipping_rates")
       .delete()
       .eq("id", data.id);
@@ -578,19 +589,19 @@ const deleteImageSchema = z.object({
 export const deleteProductImage = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => deleteImageSchema.parse(input))
   .handler(async ({ data }) => {
-    await assertAdmin(data.token);
+    const { client } = await assertAdmin(data.token);
 
-    const { data: img } = await supabaseAdmin
+    const { data: img } = await client
       .from("product_images")
       .select("is_primary")
       .eq("id", data.imageId)
       .single();
 
-    await supabaseAdmin.from("product_images").delete().eq("id", data.imageId);
+    await client.from("product_images").delete().eq("id", data.imageId);
 
     // If deleted image was primary, set next image as primary
     if (img?.is_primary) {
-      const { data: nextImg } = await supabaseAdmin
+      const { data: nextImg } = await client
         .from("product_images")
         .select("id")
         .eq("product_id", data.productId)
@@ -599,7 +610,7 @@ export const deleteProductImage = createServerFn({ method: "POST" })
         .maybeSingle();
 
       if (nextImg) {
-        await supabaseAdmin
+        await client
           .from("product_images")
           .update({ is_primary: true })
           .eq("id", nextImg.id);

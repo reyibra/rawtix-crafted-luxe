@@ -1,6 +1,16 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import { supabaseAdmin } from "@/integrations/supabase/client.server";
+import { createClient } from "@supabase/supabase-js";
+import type { Database } from "@/integrations/supabase/types";
+
+function getAnonClient() {
+  const url = process.env.SUPABASE_URL || import.meta.env.VITE_SUPABASE_URL;
+  const key = process.env.SUPABASE_PUBLISHABLE_KEY || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !key) throw new Error("Missing Supabase environment variables");
+  return createClient<Database>(url, key, {
+    auth: { storage: undefined, persistSession: false, autoRefreshToken: false },
+  });
+}
 
 const cartItemSchema = z.object({
   productId: z.string().uuid(),
@@ -39,6 +49,7 @@ function generateOrderNumber(): string {
 export const createOrder = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => orderInputSchema.parse(input))
   .handler(async ({ data }) => {
+    const client = getAnonClient();
     const orderNumber = generateOrderNumber();
     const subtotal = data.items.reduce(
       (sum, item) => sum + item.price * item.quantity,
@@ -47,37 +58,7 @@ export const createOrder = createServerFn({ method: "POST" })
     const shippingCost = data.shippingCost ?? 0;
     const total = subtotal + shippingCost;
 
-    const { data: order, error: orderError } = await supabaseAdmin
-      .from("orders")
-      .insert({
-        order_number: orderNumber,
-        email: data.email,
-        phone: data.phone,
-        customer_name: data.customerName,
-        address: data.address,
-        city: data.city,
-        province: data.province,
-        district: data.district || null,
-        postal_code: data.postalCode,
-        street_address: data.streetAddress || null,
-        address_detail: data.addressDetail || null,
-        special_instructions: data.specialInstructions || null,
-        shipping_method_name: data.shippingMethodName || null,
-        subtotal,
-        shipping_cost: shippingCost,
-        total,
-        status: "pending",
-      })
-      .select("id, order_number")
-      .single();
-
-    if (orderError) {
-      console.error("Order insert error:", orderError);
-      throw new Error("Gagal membuat pesanan. Silakan coba lagi.");
-    }
-
-    const orderItems = data.items.map((item) => ({
-      order_id: order.id,
+    const itemsJsonb = data.items.map((item) => ({
       product_id: item.productId,
       variant_id: item.variantId,
       product_name: item.name,
@@ -86,27 +67,35 @@ export const createOrder = createServerFn({ method: "POST" })
       quantity: item.quantity,
     }));
 
-    const { error: itemsError } = await supabaseAdmin
-      .from("order_items")
-      .insert(orderItems);
+    const { data: result, error } = await client.rpc("create_guest_order", {
+      p_order_number: orderNumber,
+      p_email: data.email,
+      p_phone: data.phone,
+      p_customer_name: data.customerName,
+      p_address: data.address,
+      p_city: data.city,
+      p_province: data.province,
+      p_district: data.district || "",
+      p_postal_code: data.postalCode,
+      p_street_address: data.streetAddress || "",
+      p_address_detail: data.addressDetail || "",
+      p_special_instructions: data.specialInstructions || "",
+      p_shipping_method_name: data.shippingMethodName || "",
+      p_subtotal: subtotal,
+      p_shipping_cost: shippingCost,
+      p_total: total,
+      p_items: itemsJsonb,
+    } as any);
 
-    if (itemsError) {
-      console.error("Order items insert error:", itemsError);
-      await supabaseAdmin.from("orders").delete().eq("id", order.id);
-      throw new Error("Gagal menyimpan item pesanan. Silakan coba lagi.");
+    if (error) {
+      console.error("Order creation error:", error);
+      throw new Error("Gagal membuat pesanan. Silakan coba lagi.");
     }
 
-    // Log notification event
-    await supabaseAdmin.from("order_notifications").insert({
-      order_id: order.id,
-      event_type: "order_created",
-      channel: "email",
-      status: "pending",
-    });
-
+    const orderResult = result as any;
     return {
-      orderNumber: order.order_number,
-      orderId: order.id,
+      orderNumber: orderResult.order_number || orderNumber,
+      orderId: orderResult.id,
       total,
     };
   });
@@ -119,37 +108,17 @@ const paymentProofSchema = z.object({
 export const submitPaymentProof = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => paymentProofSchema.parse(input))
   .handler(async ({ data }) => {
-    const { data: order, error: findError } = await supabaseAdmin
-      .from("orders")
-      .select("id, status, payment_proof_url")
-      .eq("order_number", data.orderNumber)
-      .single();
+    const client = getAnonClient();
 
-    if (findError || !order) {
-      throw new Error("Pesanan tidak ditemukan.");
-    }
+    const { data: success, error } = await client.rpc("submit_order_payment_proof", {
+      p_order_number: data.orderNumber,
+      p_proof_url: data.proofUrl,
+    } as any);
 
-    const { error: updateError } = await supabaseAdmin
-      .from("orders")
-      .update({
-        payment_proof_url: data.proofUrl,
-        payment_proof_submitted_at: new Date().toISOString(),
-        payment_method: "transfer_bca",
-      })
-      .eq("id", order.id);
-
-    if (updateError) {
-      console.error("Payment proof update error:", updateError);
+    if (error || !success) {
+      console.error("Payment proof error:", error);
       throw new Error("Gagal menyimpan bukti pembayaran. Silakan coba lagi.");
     }
-
-    // Log notification event
-    await supabaseAdmin.from("order_notifications").insert({
-      order_id: order.id,
-      event_type: "payment_proof_submitted",
-      channel: "email",
-      status: "pending",
-    });
 
     return { success: true };
   });
@@ -161,15 +130,15 @@ const orderNumberSchema = z.object({
 export const getOrderByNumber = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => orderNumberSchema.parse(input))
   .handler(async ({ data }) => {
-    const { data: order, error } = await supabaseAdmin
-      .from("orders")
-      .select("order_number, total, status, payment_proof_url, payment_proof_submitted_at")
-      .eq("order_number", data.orderNumber)
-      .single();
+    const client = getAnonClient();
 
-    if (error || !order) {
+    const { data: result, error } = await client.rpc("lookup_order", {
+      p_order_number: data.orderNumber,
+    } as any);
+
+    if (error || !result) {
       return null;
     }
 
-    return order;
+    return result as any;
   });
