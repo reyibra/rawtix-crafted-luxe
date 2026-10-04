@@ -22,7 +22,7 @@ Tujuan utama planning ini:
 
    - **Backend**: database, API endpoints
 
-4. Menyiapkan blueprint implementasi yang siap dipakai untuk tahap build berikutnya di Lovable.
+4. Menyiapkan blueprint implementasi yang siap dipakai untuk tahap build berikutnya di Rawtix.
 
 ---
 
@@ -232,7 +232,7 @@ Saya butuh:
 
 6. **Perencanaan backend**
 
-7. **Urutan implementasi yang paling aman untuk dieksekusi di Lovable**
+7. **Urutan implementasi yang paling aman untuk dieksekusi di Rawtix**
 
 ### Recipient reaction
 
@@ -354,7 +354,7 @@ Inspirasi utama website berasal dari brand **Televisi Star Catalog**. Saya menyu
 
 Saya tidak ingin website ini menjadi copy mentah dari referensi. Saya ingin Anda mengubah inspirasi itu menjadi **blueprint yang cocok untuk rawtix.id**.
 
-Saya akan menggunakan hasil planning ini sebagai basis untuk eksekusi di Lovable. Karena itu saya ingin hasil Anda sangat presisi dan meminimalkan revisi.
+Saya akan menggunakan hasil planning ini sebagai basis untuk eksekusi di Rawtix. Karena itu saya ingin hasil Anda sangat presisi dan meminimalkan revisi.
 
 ---
 
@@ -626,9 +626,9 @@ Jelaskan kebutuhan panel admin minimal:
 
 - konten banner/hero jika diperlukan
 
-# 9. TECH DECISION FOR LOVABLE
+# 9. TECH DECISION FOR RAWTIX
 
-Berikan rekomendasi stack dan pendekatan implementasi yang paling cocok untuk Lovable, dengan prioritas:
+Berikan rekomendasi stack dan pendekatan implementasi yang paling cocok untuk Rawtix, dengan prioritas:
 
 - cepat dibangun
 
@@ -734,15 +734,15 @@ Penting:
 
 Mulai sekarang, kerjakan sesuai struktur di atas.
 
-This project was built with [Lovable](https://lovable.dev).
+This project was built with [Rawtix](https://rawtix.id).
 
-## Build with Lovable
+## Build with Rawtix
 
-Continue developing this project in the [Lovable editor](https://lovable.dev/projects/5a59473b-bd43-4698-ab06-4a9926a1fec5).
+Continue developing this project in the Rawtix editor.
 
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: every change made in Lovable is committed straight to this repository.
-- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
+- **Ship faster**: describe what you want to build and Rawtix handles the code.
+- **Stay in sync**: every change made in Rawtix is committed straight to this repository.
+- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Rawtix, ready for your next prompt.
 
 ## Development
 
